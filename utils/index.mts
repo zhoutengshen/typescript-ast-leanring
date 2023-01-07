@@ -1,16 +1,15 @@
 import { fileURLToPath } from "url";
-import { SourceFile, ts } from "ts-morph";
+import { ts, Node,ObjectLiteralExpression } from "ts-morph";
 export const projectRoot = fileURLToPath(new URL("..", import.meta.url));
-
 export const isExportDefault = (node: ts.Node): boolean => {
   // `export default 123`, `export default "str"`
   return ts.isExportAssignment(node) && !node.isExportEquals;
 };
 
-type VisitingFunc<T> = (
-  node: ts.Node,
+type VisitingFunc<T, N extends ts.Node = ts.Node> = (
+  node: N,
   midState: T
-) => { node: ts.Node; stop?: boolean; state: T } | undefined | void;
+) => { node: N; behavior?: "stop" | "replace"; state: T } | undefined | void;
 type KindVisitingKey = keyof typeof ts.SyntaxKind | "each";
 type KindVisitingRecord<T> = {
   [P in KindVisitingKey]?: VisitingFunc<T>;
@@ -19,7 +18,7 @@ type KindVisitingRecord<T> = {
 type TransformWidthStateOption<T> = {
   init: () => T;
   visiting?: VisitingFunc<T> | KindVisitingRecord<T>;
-  visited?: (node: ts.Node) => undefined | void;
+  visited?: VisitingFunc<T>;
 };
 const isKindVisiting = <T extends any = any>(
   target: any
@@ -31,10 +30,13 @@ const isKindVisiting = <T extends any = any>(
   return !Object.values(target).some((item) => typeof item !== "function");
 };
 
-export const transformWidthState = <T extends any = undefined>(
-  sourceFile: SourceFile,
+export const transformWidthState = <T extends unknown = undefined>(
+  sourceFile: Node | undefined,
   options: TransformWidthStateOption<T>
 ) => {
+  if (!sourceFile) {
+    return;
+  }
   const execVisiting = (
     node: ts.Node,
     state: T,
@@ -64,16 +66,21 @@ export const transformWidthState = <T extends any = undefined>(
     visiting = (node, state) => ({ node, state }),
   } = options;
   let stateQueue: (T | undefined)[] = [];
+
   sourceFile.transform((ttc) => {
     const fatherState = stateQueue[stateQueue.length - 1] || init();
     const result = execVisiting(ttc.currentNode, fatherState, visiting);
-    if (result?.stop) {
+    if (result?.behavior === "stop") {
+      return ttc.currentNode;
+    }
+    if (result?.behavior === "replace") {
       return result.node;
     }
-    stateQueue.push(result?.state);
+    // 状态传递，如果没有返回状态，继承祖先的状态
+    stateQueue.push(result?.state || fatherState);
     const oneNode = ttc.visitChildren();
     stateQueue.pop();
-    visited(oneNode);
+    visited(oneNode, fatherState);
     return oneNode;
   });
 };
